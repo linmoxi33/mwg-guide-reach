@@ -1,0 +1,1 @@
+- uses loading=lazy

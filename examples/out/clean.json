@@ -1,0 +1,17 @@
+{
+  "contract": {
+    "depth": 2,
+    "reachable_pattern": "guides/<category>/<guide>/guide.md"
+  },
+  "findings": [],
+  "summary": {
+    "by_rule": {},
+    "errors": 0,
+    "guide_md_total": 3,
+    "reachable": 3,
+    "unreachable": 0,
+    "warnings": 0
+  },
+  "tool": "mwg-guide-reach",
+  "version": "1.0.0"
+}

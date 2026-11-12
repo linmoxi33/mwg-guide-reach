@@ -1,0 +1,66 @@
+{
+  "contract": {
+    "depth": 2,
+    "reachable_pattern": "guides/<category>/<guide>/guide.md"
+  },
+  "findings": [
+    {
+      "detail": "demo.html has no content outside HTML comments and the guide has no targets/",
+      "path": "guides/css/empty-demo/guide.md",
+      "rule": "STUB_DEMO",
+      "severity": "error",
+      "witness": "guides/css/empty-demo/demo.html"
+    },
+    {
+      "detail": "expectations.md exists but is empty",
+      "path": "guides/css/empty-demo/guide.md",
+      "rule": "STUB_EXPECTATIONS",
+      "severity": "warning",
+      "witness": "guides/css/empty-demo/expectations.md"
+    },
+    {
+      "detail": "frontmatter name 'other-name' differs from directory 'wrong-name'",
+      "path": "guides/css/wrong-name/guide.md",
+      "rule": "ID_DIR_MISMATCH",
+      "severity": "warning",
+      "witness": "other-name"
+    },
+    {
+      "detail": "guide id 'lazy-image' is declared by 2 files; the inventory map keeps only one",
+      "path": "guides/performance/lazy-image/guide.md",
+      "rule": "DUPLICATE_GUIDE_ID",
+      "severity": "error",
+      "witness": "guides/performance/lazy-image/variant/guide.md"
+    },
+    {
+      "detail": "frontmatter name 'lazy-image' differs from directory 'variant'",
+      "path": "guides/performance/lazy-image/variant/guide.md",
+      "rule": "ID_DIR_MISMATCH",
+      "severity": "warning",
+      "witness": "lazy-image"
+    },
+    {
+      "detail": "guide.md sits 3 directory level(s) below guides/, contract depth is 2; scanAllGuides() never descends here",
+      "path": "guides/performance/lazy-image/variant/guide.md",
+      "rule": "UNREACHABLE_GUIDE",
+      "severity": "error",
+      "witness": "guides/performance/lazy-image/variant"
+    }
+  ],
+  "summary": {
+    "by_rule": {
+      "DUPLICATE_GUIDE_ID": 1,
+      "ID_DIR_MISMATCH": 2,
+      "STUB_DEMO": 1,
+      "STUB_EXPECTATIONS": 1,
+      "UNREACHABLE_GUIDE": 1
+    },
+    "errors": 3,
+    "guide_md_total": 6,
+    "reachable": 5,
+    "unreachable": 1,
+    "warnings": 3
+  },
+  "tool": "mwg-guide-reach",
+  "version": "1.0.0"
+}

@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""mwg-guide-reach: reachability audit for Modern Web Guidance guide corpora.
+
+The upstream inventory (scanAllGuides in src/core/guide-validation.ts) walks
+exactly guides/<category>/<guide>/ and never recurses. Any guide.md below that
+depth exists on disk but is invisible to the CLI, its integrity test, and every
+agent that consumes the guide inventory. This tool measures that invisible set
+and the duplicate/stub artifacts hiding inside it.
+
+Zero third-party dependencies. Reads the filesystem only.
+"""
+
+import argparse
+import json
+import os
+import sys
+
+TOOL = "mwg-guide-reach"
+VERSION = "1.0.0"
+CONTRACT_DEPTH = 2  # guides/<category>/<guide>/guide.md
+DEMO = "demo.html"
+EXPECTATIONS = "expectations.md"
+GUIDE = "guide.md"
+ERROR = "error"
+WARNING = "warning"
+
+
+class InputError(Exception):
+    pass
+
+
+def parse_frontmatter(text):
+    """Return the top-level scalar `name:` from a --- fenced frontmatter block."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    name = None
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if line.startswith("name:"):
+            value = line.split(":", 1)[1].strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            name = value or None
+            break
+    return name
+
+
+def strip_comments(text):
+    """Remove HTML comments and whitespace; used to detect TODO-only stubs."""
+    out = []
+    i = 0
+    while i < len(text):
+        start = text.find("<!--", i)
+        if start < 0:
+            out.append(text[i:])
+            break
+        out.append(text[i:start])
+        end = text.find("-->", start + 4)
+        if end < 0:
+            break
+        i = end + 3
+    return "".join(out).strip()
+
+
+def read_text(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError as exc:
+        raise InputError(f"cannot read {path}: {exc}") from exc
+
+
+def discover(root):
+    """Return every guide.md under <root>/guides with its guide-directory depth."""
+    guides_root = os.path.join(root, "guides")
+    if not os.path.isdir(guides_root):
+        raise InputError(f"no guides/ directory under {root!r}")
+    found = []
+    for dirpath, dirnames, filenames in os.walk(guides_root):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        if GUIDE not in filenames:
+            continue
+        rel = os.path.relpath(os.path.join(dirpath, GUIDE), root).replace(os.sep, "/")
+        after = rel.split("/")[1:-1]  # drop 'guides' and 'guide.md'
+        found.append({"path": rel, "dir": dirpath, "depth": len(after), "parts": after})
+    found.sort(key=lambda item: item["path"])
+    return found
+
+
+def audit(root):
+    entries = discover(root)
+    findings = []
+    ids = {}
+    reachable = 0
+    for entry in entries:
+        text = read_text(os.path.join(entry["dir"], GUIDE))
+        name = parse_frontmatter(text)
+        if entry["depth"] == CONTRACT_DEPTH:
+            reachable += 1
+        else:
+            findings.append({
+                "rule": "UNREACHABLE_GUIDE",
+                "severity": ERROR,
+                "path": entry["path"],
+                "witness": "guides/" + "/".join(entry["parts"]) if entry["parts"] else entry["path"],
+                "detail": "guide.md sits %d directory level(s) below guides/, contract depth is %d; "
+                          "scanAllGuides() never descends here" % (entry["depth"], CONTRACT_DEPTH),
+            })
+        if not name:
+            findings.append({
+                "rule": "NO_GUIDE_ID",
+                "severity": ERROR,
+                "path": entry["path"],
+                "witness": entry["path"],
+                "detail": "frontmatter has no top-level name:, so inventory cannot key the guide",
+            })
+        else:
+            ids.setdefault(name, []).append(entry["path"])
+            if entry["parts"] and name != entry["parts"][-1]:
+                findings.append({
+                    "rule": "ID_DIR_MISMATCH",
+                    "severity": WARNING,
+                    "path": entry["path"],
+                    "witness": name,
+                    "detail": "frontmatter name %r differs from directory %r" % (name, entry["parts"][-1]),
+                })
+        if entry["depth"] == CONTRACT_DEPTH:
+            check_artifacts(entry, findings)
+
+    for name in sorted(ids):
+        paths = sorted(ids[name])
+        if len(paths) > 1:
+            findings.append({
+                "rule": "DUPLICATE_GUIDE_ID",
+                "severity": ERROR,
+                "path": paths[0],
+                "witness": paths[1],
+                "detail": "guide id %r is declared by %d files; the inventory map keeps only one" % (name, len(paths)),
+            })
+
+    findings.sort(key=lambda f: (f["path"], f["rule"], f["witness"]))
+    by_rule = {}
+    for finding in findings:
+        by_rule[finding["rule"]] = by_rule.get(finding["rule"], 0) + 1
+    return {
+        "tool": TOOL,
+        "version": VERSION,
+        "contract": {
+            "reachable_pattern": "guides/<category>/<guide>/guide.md",
+            "depth": CONTRACT_DEPTH,
+        },
+        "summary": {
+            "guide_md_total": len(entries),
+            "reachable": reachable,
+            "unreachable": len(entries) - reachable,
+            "errors": sum(1 for f in findings if f["severity"] == ERROR),
+            "warnings": sum(1 for f in findings if f["severity"] == WARNING),
+            "by_rule": dict(sorted(by_rule.items())),
+        },
+        "findings": findings,
+    }
+
+
+def check_artifacts(entry, findings):
+    """Check only artifacts that upstream treats as runnable evidence.
+
+    Upstream accepts either a demo.html or a targets/ directory (eval targets);
+    a guide may legitimately ship only one of them. Missing files are therefore
+    reported as warnings, while an explicitly empty stub is an error.
+    """
+    demo = os.path.join(entry["dir"], DEMO)
+    expectations = os.path.join(entry["dir"], EXPECTATIONS)
+    targets = os.path.join(entry["dir"], "targets")
+    has_targets = os.path.isdir(targets)
+    base = "guides/" + "/".join(entry["parts"])
+    has_tasks = os.path.isdir(os.path.join(entry["dir"], "tasks"))
+    if os.path.isfile(demo) and not has_targets and not has_tasks and not strip_comments(read_text(demo)):
+        findings.append({
+            "rule": "STUB_DEMO",
+            "severity": ERROR,
+            "path": entry["path"],
+            "witness": base + "/" + DEMO,
+            "detail": "demo.html has no content outside HTML comments and the guide has no targets/",
+        })
+    if os.path.isfile(expectations) and not read_text(expectations).strip():
+        findings.append({
+            "rule": "STUB_EXPECTATIONS",
+            "severity": WARNING,
+            "path": entry["path"],
+            "witness": base + "/" + EXPECTATIONS,
+            "detail": "expectations.md exists but is empty",
+        })
+
+
+def render_text(report):
+    lines = [
+        "%s %s" % (TOOL, report["version"]),
+        "contract: %s (depth %d)" % (
+            report["contract"]["reachable_pattern"], report["contract"]["depth"]),
+        "guide.md: %d total, %d reachable, %d unreachable" % (
+            report["summary"]["guide_md_total"],
+            report["summary"]["reachable"],
+            report["summary"]["unreachable"],
+        ),
+    ]
+    for finding in report["findings"]:
+        lines.append("%s %s %s -> %s: %s" % (
+            finding["severity"].upper(),
+            finding["rule"],
+            finding["path"],
+            finding["witness"],
+            finding["detail"],
+        ))
+    lines.append("%d error(s), %d warning(s)" % (
+        report["summary"]["errors"], report["summary"]["warnings"]))
+    return "\n".join(lines)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog=TOOL,
+        description="Audit which guide.md artifacts a Modern Web Guidance inventory can actually reach.",
+    )
+    parser.add_argument("root", help="repository root containing guides/")
+    parser.add_argument("--json", action="store_true", help="emit a machine-readable report")
+    parser.add_argument("--fail-on", choices=["error", "warning"], default="error",
+                        help="minimum severity that produces exit code 1 (default: error)")
+    args = parser.parse_args(argv)
+    try:
+        report = audit(os.path.abspath(args.root))
+    except InputError as exc:
+        print("%s: %s" % (TOOL, exc), file=sys.stderr)
+        return 2
+    if args.json:
+        json.dump(report, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+    else:
+        print(render_text(report))
+    threshold = report["summary"]["errors"] if args.fail_on == "error" else (
+        report["summary"]["errors"] + report["summary"]["warnings"])
+    return 1 if threshold else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
